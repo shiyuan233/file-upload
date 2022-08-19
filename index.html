@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>大小文件上传</title>
+</head>
+<style>
+  progress {
+    width: 100%;
+  }
+</style>
+
+<body>
+  <div>
+    <h1>单体文件上传</h1>
+    <input type="file" name="" id="single-file" />
+    <button id="singleBtn">单体文件上传</button>
+    <div>
+      <progress max="100" value="0" id="single-progress"></progress>
+    </div>
+  </div>
+
+  <div>
+    <h1>切片文件上传</h1>
+    <input type="file" name="" id="splice-file" />
+    <button id="sliceBtn">切片文件上传</button>
+    <div>
+      <h4>hash生成进度条</h4>
+      <progress max="100" value="0" id="slice-hash-progress"></progress>
+      <h4>文件上传进度条</h4>
+      <progress max="100" value="0" id="slice-progress"></progress>
+    </div>
+  </div>
+</body>
+
+</html>
+<script src="./public/axios.js"></script>
+<script src="./utils//request.js"></script>
+<script>
+  /** 实现单个文件 */
+  singleBtn.onclick = () => {
+    const file = document.querySelector('#single-file').files[0]
+    const form = new FormData()
+    form.append('file', file)
+    form.append('fileName', file.name)
+    // axios.post('http://localhost:3001/post', form, {
+    //   onUploadProgress: (e) => {
+    //     document.querySelector('#single-progress').setAttribute('value', (e.loaded / e.total) * 100)
+    //   }
+    // })
+    request({
+      url: 'http://localhost:3001/post',
+      method: 'post',
+      data: form,
+    }).then(res => {
+      console.log(res)
+    })
+
+  }
+
+
+
+
+  /**切片文件上传*/
+  let SIZE = 1024 * 1024 * 10 // 2M
+
+  sliceBtn.onclick = async () => {
+    let file = document.querySelector('#splice-file').files[0]
+    console.log(file);
+    let fileList = SplitFile(file)
+    console.log(fileList)
+    let hash = await createHash(fileList)
+    console.log(hash);
+    let rr = uploadFile(fileList, hash, file.name)
+    await concurrentRequest(rr)
+    console.log(rr)
+  }
+  // 文件切片
+  function SplitFile(file, size = SIZE) {
+    let cur = 0
+    let total = file.size
+    let res = []
+    while (cur < total) {
+      res.push({
+        file: file.slice(cur, cur + size)
+      })
+      cur += size
+    }
+    return res
+  }
+
+  // 生成hash
+  function createHash(fileChunkList) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker('./public/hash.js')
+      worker.postMessage({
+        fileChunkList
+      })
+      worker.onmessage = e => {
+        const {
+          hash,
+          percent: pp
+        } = e.data
+        document.querySelector('#slice-hash-progress').setAttribute('value', pp)
+        if (hash) {
+          resolve(hash)
+        }
+      }
+    })
+  }
+
+  // 上传文件
+  function uploadFile(fileChunkList, hash, fileName) {
+    let res = []
+    for (let v of fileChunkList) {
+      const form = new FormData()
+      form.append('file', v.file),
+        form.append('hash', hash),
+        form.append('fileName', fileName)
+      res.push({
+        form,
+        percent: 0
+      })
+    }
+    return res
+
+  }
+
+
+  // 请求并发
+  function concurrentRequest(requestList, max = 4) {
+    return new Promise((resolve) => {
+      let count = 0;
+      let idx = 0
+      let start = () => {
+        while (idx < requestList.length && max > 0) {
+          let params = requestList[idx].form
+          let item = requestList[idx]
+          idx++
+          max--
+          request({
+            url: 'http://localhost:3001/post',
+            method: 'post',
+            data: params,
+            onProgress: e => {
+              item.percent = (e.loaded / e.total) * 100
+              let {
+                percent: total
+              } = requestList.reduce((a, b) => {
+                return {
+                  percent: a['percent'] + b['percent']
+                }
+              })
+              document.querySelector('#slice-progress').setAttribute('value', total / requestList.length)
+            }
+          }).then(res => {
+            max++
+            count++
+            if (count == requestList.length) {
+              resolve()
+            } else {
+              start()
+            }
+          })
+
+        }
+      }
+      start()
+
+    })
+
+
+  }
+</script>
